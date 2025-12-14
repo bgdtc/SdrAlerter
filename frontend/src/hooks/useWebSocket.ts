@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { io, Socket } from 'socket.io-client'
+import { API_BASE_URL } from '../utils/api'
 
 interface AudioData {
   audio: number[]
@@ -13,7 +14,7 @@ export function useWebSocket() {
   const [audioData, setAudioData] = useState<AudioData | null>(null)
 
   useEffect(() => {
-    const socketInstance = io('http://localhost:3000', {
+    const socketInstance = io(API_BASE_URL, {
       transports: ['websocket', 'polling']
     })
 

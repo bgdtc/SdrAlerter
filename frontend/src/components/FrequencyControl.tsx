@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import axios from 'axios'
+import { apiClient } from '../utils/api'
 
 interface FrequencyControlProps {
   deviceId: string | null
@@ -24,7 +24,7 @@ export default function FrequencyControl({
     // Vérifier le statut périodiquement
     const interval = setInterval(async () => {
       try {
-        const response = await axios.get('http://localhost:3000/api/sdr/status')
+        const response = await apiClient.get('/api/sdr/status')
         if (response.data.isListening !== isListening) {
           onListeningChange(response.data.isListening)
         }
@@ -47,7 +47,7 @@ export default function FrequencyControl({
 
     try {
       const deviceIndex = parseInt(deviceId.split('-').pop() || '0')
-      await axios.post('http://localhost:3000/api/sdr/start', {
+      await apiClient.post('/api/sdr/start', {
         deviceIndex,
         frequency: parseFloat(frequency),
         gain: gain ? parseFloat(gain) : undefined,
@@ -69,7 +69,7 @@ export default function FrequencyControl({
     setError(null)
 
     try {
-      await axios.post('http://localhost:3000/api/sdr/stop')
+      await apiClient.post('/api/sdr/stop')
       onListeningChange(false)
     } catch (err: any) {
       setError(err.response?.data?.error || 'Erreur lors de l\'arrêt')

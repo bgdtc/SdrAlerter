@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import axios from 'axios'
+import { apiClient } from '../utils/api'
 
 interface PocsagMessage {
   id: number
@@ -29,7 +29,7 @@ export default function PocsagDecoder({ deviceId, onMessagesChange }: PocsagDeco
 
     const fetchMessages = async () => {
       try {
-        const response = await axios.get('http://localhost:3000/api/pocsag/messages?limit=100')
+        const response = await apiClient.get('/api/pocsag/messages?limit=100')
         const newMessages = response.data.messages || []
         setMessages(newMessages)
         if (onMessagesChange) {
@@ -50,7 +50,7 @@ export default function PocsagDecoder({ deviceId, onMessagesChange }: PocsagDeco
   useEffect(() => {
     const checkStatus = async () => {
       try {
-        const response = await axios.get('http://localhost:3000/api/pocsag/status')
+        const response = await apiClient.get('/api/pocsag/status')
         if (response.data.isDecoding !== isDecoding) {
           setIsDecoding(response.data.isDecoding)
         }
@@ -69,10 +69,10 @@ export default function PocsagDecoder({ deviceId, onMessagesChange }: PocsagDeco
 
     try {
       if (isDecoding) {
-        await axios.post('http://localhost:3000/api/pocsag/stop')
+        await apiClient.post('/api/pocsag/stop')
         setIsDecoding(false)
       } else {
-        await axios.post('http://localhost:3000/api/pocsag/start')
+        await apiClient.post('/api/pocsag/start')
         setIsDecoding(true)
       }
     } catch (err: any) {

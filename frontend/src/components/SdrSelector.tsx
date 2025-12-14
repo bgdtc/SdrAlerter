@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import axios from 'axios'
+import { apiClient } from '../utils/api'
 
 interface Device {
   index: number
@@ -22,7 +22,7 @@ export default function SdrSelector({ selectedDevice, onDeviceSelect }: SdrSelec
     setLoading(true)
     setError(null)
     try {
-      const response = await axios.get('http://localhost:3000/api/sdr/devices')
+      const response = await apiClient.get('/api/sdr/devices')
       setDevices(response.data.devices || [])
     } catch (err: any) {
       setError(err.response?.data?.error || 'Erreur lors de la récupération des devices')
