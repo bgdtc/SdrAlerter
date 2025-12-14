@@ -159,8 +159,9 @@ export async function startListening(params) {
     audioBuffer.push(...Array.from(samples));
 
     // Émettre des chunks audio plus fréquemment pour un streaming fluide
-    // Pour FM avec -r 22050, on envoie des chunks de ~2205 échantillons (~100ms à 22050 Hz)
-    const chunkSize = mode === 'fm' ? 2205 : 4096;
+    // Pour FM avec -r 22050, on envoie des chunks de ~1102 échantillons (~50ms à 22050 Hz)
+    // Plus petits chunks = moins de latence et streaming plus fluide
+    const chunkSize = mode === 'fm' ? 1102 : 2048;
 
     if (audioBuffer.length >= chunkSize) {
       // Calcul FFT pour visualisation (utiliser plus d'échantillons pour meilleure résolution)

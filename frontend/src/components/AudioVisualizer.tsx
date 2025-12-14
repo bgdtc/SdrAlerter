@@ -34,92 +34,119 @@ export default function AudioVisualizer({ isListening }: AudioVisualizerProps) {
   const [muted, setMuted] = useState(false)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const audioContextRef = useRef<AudioContext | null>(null)
-  const sourceRef = useRef<AudioBufferSourceNode | null>(null)
-  const audioQueueRef = useRef<number[][]>([])
-  const nextPlayTimeRef = useRef<number>(0)
+  const processorRef = useRef<ScriptProcessorNode | null>(null)
+  const gainNodeRef = useRef<GainNode | null>(null)
+  const audioBufferRef = useRef<Float32Array>(new Float32Array(0))
+  const sampleRateRef = useRef<number>(22050)
+  const bufferWritePosRef = useRef<number>(0)
 
-  // Initialiser le contexte audio
+  // Initialiser le contexte audio et le ScriptProcessorNode
   useEffect(() => {
     if (!audioContextRef.current) {
       audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)()
-      nextPlayTimeRef.current = audioContextRef.current.currentTime
-    }
-  }, [])
-
-  // Nettoyer la queue audio quand l'écoute s'arrête
-  useEffect(() => {
-    if (!isListening) {
-      audioQueueRef.current = []
-      nextPlayTimeRef.current = audioContextRef.current?.currentTime || 0
-    }
-  }, [isListening])
-
-  // Gérer le playback audio avec streaming continu
-  useEffect(() => {
-    if (!audioData || !audioContextRef.current || muted || !isListening) return
-
-    const audioContext = audioContextRef.current
-    const sampleRate = audioData.sampleRate || 22050
-
-    // Ajouter les données à la queue
-    audioQueueRef.current.push(audioData.audio)
-
-    // Limiter la taille de la queue pour éviter les retards
-    if (audioQueueRef.current.length > 10) {
-      audioQueueRef.current.shift()
-      nextPlayTimeRef.current = audioContext.currentTime
-    }
-
-    // Fonction pour jouer le prochain buffer de la queue
-    const playNextBuffer = () => {
-      if (audioQueueRef.current.length === 0 || muted || !isListening) return
-
-      const audioDataArray = audioQueueRef.current.shift()!
-      if (!audioDataArray || audioDataArray.length === 0) {
-        playNextBuffer()
-        return
-      }
-
-      // Créer un buffer audio depuis les données avec le bon sample rate
-      const buffer = audioContext.createBuffer(1, audioDataArray.length, sampleRate)
-      const channelData = buffer.getChannelData(0)
-
-      // Normaliser les données Int16 vers Float32
-      for (let i = 0; i < audioDataArray.length; i++) {
-        channelData[i] = audioDataArray[i] / 32768.0
-      }
-
-      // Créer une source et la jouer au bon moment
-      const source = audioContext.createBufferSource()
-      const gainNode = audioContext.createGain()
       
+      // Créer un ScriptProcessorNode pour un streaming continu
+      // bufferSize: 2048 pour moins de latence, inputs: 0, outputs: 1
+      const processor = audioContextRef.current.createScriptProcessor(2048, 0, 1)
+      const gainNode = audioContextRef.current.createGain()
+      
+      processor.onaudioprocess = (e) => {
+        if (muted || !isListening) {
+          e.outputBuffer.getChannelData(0).fill(0)
+          return
+        }
+
+        const output = e.outputBuffer.getChannelData(0)
+        const outputLength = output.length
+        const buffer = audioBufferRef.current
+        const bufferLength = buffer.length
+
+        // Copier les données du buffer vers la sortie
+        for (let i = 0; i < outputLength; i++) {
+          if (bufferWritePosRef.current < bufferLength) {
+            output[i] = buffer[bufferWritePosRef.current] * volume
+            bufferWritePosRef.current++
+          } else {
+            // Pas assez de données, remplir avec du silence
+            output[i] = 0
+          }
+        }
+
+        // Si on a lu tout le buffer, le réinitialiser
+        if (bufferWritePosRef.current >= bufferLength) {
+          audioBufferRef.current = new Float32Array(0)
+          bufferWritePosRef.current = 0
+        }
+      }
+
       gainNode.gain.value = volume
-      source.buffer = buffer
-      source.connect(gainNode)
-      gainNode.connect(audioContext.destination)
+      processor.connect(gainNode)
+      gainNode.connect(audioContextRef.current.destination)
 
-      // Planifier la lecture au bon moment pour un streaming continu
-      const startTime = Math.max(audioContext.currentTime, nextPlayTimeRef.current)
-      source.start(startTime)
-      
-      // Mettre à jour le temps de la prochaine lecture
-      nextPlayTimeRef.current = startTime + buffer.duration
-
-      source.onended = () => {
-        // Jouer le prochain buffer quand celui-ci se termine
-        playNextBuffer()
-      }
-    }
-
-    // Jouer immédiatement le premier buffer si c'est le premier
-    if (audioQueueRef.current.length === 1) {
-      playNextBuffer()
+      processorRef.current = processor
+      gainNodeRef.current = gainNode
     }
 
     return () => {
-      // Nettoyer si nécessaire
+      if (processorRef.current) {
+        processorRef.current.disconnect()
+        processorRef.current = null
+      }
     }
-  }, [audioData, volume, muted, isListening])
+  }, [])
+
+  // Mettre à jour le volume
+  useEffect(() => {
+    if (gainNodeRef.current) {
+      gainNodeRef.current.gain.value = volume
+    }
+  }, [volume])
+
+  // Démarrer/arrêter le ScriptProcessorNode selon l'état d'écoute
+  useEffect(() => {
+    if (!processorRef.current || !audioContextRef.current) return
+
+    if (isListening && !muted) {
+      // S'assurer que le contexte audio est actif
+      if (audioContextRef.current.state === 'suspended') {
+        audioContextRef.current.resume()
+      }
+    } else {
+      // Nettoyer le buffer quand l'écoute s'arrête
+      audioBufferRef.current = new Float32Array(0)
+      bufferWritePosRef.current = 0
+    }
+  }, [isListening, muted])
+
+  // Ajouter les données audio au buffer circulaire
+  useEffect(() => {
+    if (!audioData || !isListening) return
+
+    const sampleRate = audioData.sampleRate || 22050
+    sampleRateRef.current = sampleRate
+
+    // Convertir les données Int16 en Float32
+    const newSamples = new Float32Array(audioData.audio.length)
+    for (let i = 0; i < audioData.audio.length; i++) {
+      newSamples[i] = audioData.audio[i] / 32768.0
+    }
+
+    // Ajouter les nouveaux échantillons au buffer existant
+    const currentBuffer = audioBufferRef.current
+    const newBuffer = new Float32Array(currentBuffer.length + newSamples.length)
+    newBuffer.set(currentBuffer, 0)
+    newBuffer.set(newSamples, currentBuffer.length)
+    audioBufferRef.current = newBuffer
+
+    // Limiter la taille du buffer pour éviter les retards (garder max ~1 seconde)
+    const maxBufferSize = sampleRate * 1 // 1 seconde
+    if (audioBufferRef.current.length > maxBufferSize) {
+      // Garder seulement les dernières données
+      const excess = audioBufferRef.current.length - maxBufferSize
+      audioBufferRef.current = audioBufferRef.current.slice(excess)
+      bufferWritePosRef.current = Math.max(0, bufferWritePosRef.current - excess)
+    }
+  }, [audioData, isListening])
 
   // Dessiner l'oscilloscope
   useEffect(() => {
