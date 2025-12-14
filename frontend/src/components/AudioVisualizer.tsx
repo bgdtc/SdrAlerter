@@ -38,6 +38,22 @@ export default function AudioVisualizer({ isListening }: AudioVisualizerProps) {
   const gainNodeRef = useRef<GainNode | null>(null)
   const audioBufferRef = useRef<number[]>([])
   const sampleRateRef = useRef<number>(22050)
+  const mutedRef = useRef(muted)
+  const isListeningRef = useRef(isListening)
+  const volumeRef = useRef(volume)
+
+  // Mettre à jour les refs quand les valeurs changent
+  useEffect(() => {
+    mutedRef.current = muted
+  }, [muted])
+
+  useEffect(() => {
+    isListeningRef.current = isListening
+  }, [isListening])
+
+  useEffect(() => {
+    volumeRef.current = volume
+  }, [volume])
 
   // Initialiser le contexte audio et le ScriptProcessorNode
   useEffect(() => {
@@ -50,19 +66,20 @@ export default function AudioVisualizer({ isListening }: AudioVisualizerProps) {
       const gainNode = audioContextRef.current.createGain()
       
       processor.onaudioprocess = (e) => {
-        if (muted || !isListening) {
-          e.outputBuffer.getChannelData(0).fill(0)
-          return
-        }
-
         const output = e.outputBuffer.getChannelData(0)
         const outputLength = output.length
         const buffer = audioBufferRef.current
 
+        // Utiliser les refs pour avoir les valeurs à jour
+        if (mutedRef.current || !isListeningRef.current || buffer.length === 0) {
+          output.fill(0)
+          return
+        }
+
         // Lire depuis le début du buffer (FIFO)
         for (let i = 0; i < outputLength; i++) {
           if (buffer.length > 0) {
-            output[i] = buffer.shift()! * volume
+            output[i] = buffer.shift()! * volumeRef.current
           } else {
             // Pas assez de données, remplir avec du silence
             output[i] = 0
@@ -76,6 +93,15 @@ export default function AudioVisualizer({ isListening }: AudioVisualizerProps) {
 
       processorRef.current = processor
       gainNodeRef.current = gainNode
+
+      // Toujours s'assurer que le contexte audio démarre
+      if (audioContextRef.current.state === 'suspended') {
+        audioContextRef.current.resume().then(() => {
+          console.log('Contexte audio démarré')
+        }).catch(err => {
+          console.error('Erreur démarrage audio:', err)
+        })
+      }
     }
 
     return () => {
@@ -97,12 +123,14 @@ export default function AudioVisualizer({ isListening }: AudioVisualizerProps) {
   useEffect(() => {
     if (!processorRef.current || !audioContextRef.current) return
 
-    if (isListening && !muted) {
-      // S'assurer que le contexte audio est actif
-      if (audioContextRef.current.state === 'suspended') {
-        audioContextRef.current.resume()
-      }
-    } else {
+    // Toujours s'assurer que le contexte audio est actif
+    if (audioContextRef.current.state === 'suspended') {
+      audioContextRef.current.resume().catch(err => {
+        console.error('Erreur lors de la reprise du contexte audio:', err)
+      })
+    }
+
+    if (!isListening) {
       // Nettoyer le buffer quand l'écoute s'arrête
       audioBufferRef.current = []
     }
@@ -117,8 +145,15 @@ export default function AudioVisualizer({ isListening }: AudioVisualizerProps) {
 
     // Convertir les données Int16 en Float32 et les ajouter au buffer
     const buffer = audioBufferRef.current
-    for (let i = 0; i < audioData.audio.length; i++) {
+    const samplesToAdd = audioData.audio.length
+    
+    for (let i = 0; i < samplesToAdd; i++) {
       buffer.push(audioData.audio[i] / 32768.0)
+    }
+
+    // Log pour déboguer (à retirer après)
+    if (buffer.length > sampleRate * 0.5) {
+      console.log(`Buffer audio: ${buffer.length} échantillons (~${(buffer.length / sampleRate).toFixed(2)}s)`)
     }
 
     // Limiter la taille du buffer pour éviter les retards (garder max ~2 secondes)
@@ -226,7 +261,19 @@ export default function AudioVisualizer({ isListening }: AudioVisualizerProps) {
             <span className="text-sm w-10">{Math.round(volume * 100)}%</span>
           </div>
           <button
-            onClick={() => setMuted(!muted)}
+            onClick={() => {
+              setMuted(!muted)
+              // Forcer la reprise du contexte audio au clic
+              if (audioContextRef.current) {
+                if (audioContextRef.current.state === 'suspended') {
+                  audioContextRef.current.resume().then(() => {
+                    console.log('Audio repris')
+                  }).catch(err => {
+                    console.error('Erreur reprise audio:', err)
+                  })
+                }
+              }
+            }}
             className={`px-3 py-1 rounded text-sm ${
               muted
                 ? 'bg-red-600 hover:bg-red-700'
@@ -235,6 +282,29 @@ export default function AudioVisualizer({ isListening }: AudioVisualizerProps) {
           >
             {muted ? '🔇 Mute' : '🔊 Unmute'}
           </button>
+          {audioContextRef.current?.state === 'suspended' && (
+            <button
+              onClick={() => {
+                audioContextRef.current?.resume().then(() => {
+                  console.log('Audio démarré manuellement')
+                }).catch(err => {
+                  console.error('Erreur démarrage audio:', err)
+                })
+              }}
+              className="px-2 py-1 bg-blue-600 hover:bg-blue-700 rounded text-xs"
+            >
+              ▶ Démarrer Audio
+            </button>
+          )}
+          <div className="text-xs text-slate-500">
+            {audioContextRef.current && (
+              <>
+                Audio: {audioContextRef.current.state} | 
+                Buffer: {audioBufferRef.current.length} échantillons 
+                (~{(audioBufferRef.current.length / sampleRateRef.current).toFixed(2)}s)
+              </>
+            )}
+          </div>
         </div>
       </div>
 
