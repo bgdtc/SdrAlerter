@@ -42,19 +42,51 @@ export default function FrequencyControl({
       return
     }
 
+    // Valider la fréquence
+    const freqValue = parseFloat(frequency)
+    if (isNaN(freqValue) || freqValue <= 0) {
+      setError('Veuillez entrer une fréquence valide')
+      return
+    }
+
     setLoading(true)
     setError(null)
 
     try {
-      const deviceIndex = parseInt(deviceId.split('-').pop() || '0')
-      await apiClient.post('/api/sdr/start', {
+      // Extraire l'index du device (format: "rtl-sdr-0" -> 0)
+      const deviceIndexStr = deviceId.split('-').pop() || '0'
+      const deviceIndex = parseInt(deviceIndexStr, 10)
+      
+      if (isNaN(deviceIndex)) {
+        setError('Erreur: index du device invalide')
+        setLoading(false)
+        return
+      }
+
+      const requestData = {
         deviceIndex,
-        frequency: parseFloat(frequency),
-        gain: gain ? parseFloat(gain) : undefined,
-        sampleRate: parseInt(sampleRate),
-        mode,
-        filterWidth: filterWidth ? parseFloat(filterWidth) : undefined
-      })
+        frequency: freqValue,
+        sampleRate: parseInt(sampleRate, 10) || 240000,
+        mode: mode || 'fm'
+      }
+
+      // Ajouter le gain seulement s'il est défini
+      if (gain && gain.trim() !== '') {
+        const gainValue = parseFloat(gain)
+        if (!isNaN(gainValue)) {
+          requestData.gain = gainValue
+        }
+      }
+
+      // Ajouter filterWidth seulement s'il est défini
+      if (filterWidth && filterWidth.trim() !== '') {
+        const filterWidthValue = parseFloat(filterWidth)
+        if (!isNaN(filterWidthValue)) {
+          requestData.filterWidth = filterWidthValue
+        }
+      }
+
+      await apiClient.post('/api/sdr/start', requestData)
       onListeningChange(true)
     } catch (err: any) {
       setError(err.response?.data?.error || 'Erreur lors du démarrage')

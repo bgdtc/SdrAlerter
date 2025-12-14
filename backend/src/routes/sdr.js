@@ -17,8 +17,14 @@ router.post('/start', async (req, res) => {
   try {
     const { deviceIndex, frequency, gain, sampleRate, mode, filterWidth } = req.body;
 
-    if (!frequency || !deviceIndex) {
-      return res.status(400).json({ error: 'frequency et deviceIndex sont requis' });
+    // Vérifier que frequency est défini et valide
+    if (!frequency || isNaN(parseFloat(frequency))) {
+      return res.status(400).json({ error: 'frequency est requis et doit être un nombre' });
+    }
+
+    // Vérifier que deviceIndex est défini (mais peut être 0)
+    if (deviceIndex === undefined || deviceIndex === null || isNaN(parseInt(deviceIndex))) {
+      return res.status(400).json({ error: 'deviceIndex est requis et doit être un nombre' });
     }
 
     await startListening({
