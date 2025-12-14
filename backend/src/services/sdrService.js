@@ -113,18 +113,24 @@ export async function startListening(params) {
     throw new Error('Gain doit être entre 0 et 49.6 dB');
   }
 
+  // Normaliser le mode en minuscules
+  const normalizedMode = mode.toLowerCase();
+
   // Construction de la commande rtl_fm
   const args = [
     '-f', `${frequency}M`,
     '-s', sampleRate.toString(),
-    '-M', mode
+    '-M', normalizedMode
   ];
 
   // Pour FM, ajouter le sample rate audio de sortie (22050 Hz pour qualité audio standard)
   // Cela permet d'avoir un audio de bonne qualité sans downsampling côté serveur
-  if (mode === 'fm') {
+  if (normalizedMode === 'fm') {
     args.push('-r', '22050'); // Sample rate audio de sortie pour FM
+    console.log('Mode FM détecté, ajout de -r 22050');
   }
+
+  console.log('Commande rtl_fm:', 'rtl_fm', args.join(' '));
 
   if (gain !== undefined) {
     args.push('-g', gain.toString());
@@ -146,7 +152,7 @@ export async function startListening(params) {
   let fftBuffer = [];
 
   // Sample rate audio effectif (22050 pour FM, sinon le sample rate configuré)
-  const audioSampleRate = mode === 'fm' ? 22050 : sampleRate;
+  const audioSampleRate = normalizedMode === 'fm' ? 22050 : sampleRate;
 
   rtlFmProcess.stdout.on('data', (chunk) => {
     // Rediriger vers POCSAG si actif (utiliser les données brutes avant conversion)
@@ -161,7 +167,7 @@ export async function startListening(params) {
     // Émettre des chunks audio plus fréquemment pour un streaming fluide
     // Pour FM avec -r 22050, on envoie des chunks de ~1102 échantillons (~50ms à 22050 Hz)
     // Plus petits chunks = moins de latence et streaming plus fluide
-    const chunkSize = mode === 'fm' ? 1102 : 2048;
+    const chunkSize = normalizedMode === 'fm' ? 1102 : 2048;
 
     if (audioBuffer.length >= chunkSize) {
       // Calcul FFT pour visualisation (utiliser plus d'échantillons pour meilleure résolution)

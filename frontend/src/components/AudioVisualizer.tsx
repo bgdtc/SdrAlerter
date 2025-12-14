@@ -71,19 +71,32 @@ export default function AudioVisualizer({ isListening }: AudioVisualizerProps) {
         const buffer = audioBufferRef.current
 
         // Utiliser les refs pour avoir les valeurs à jour
-        if (mutedRef.current || !isListeningRef.current || buffer.length === 0) {
+        if (mutedRef.current || !isListeningRef.current) {
+          output.fill(0)
+          return
+        }
+
+        // Si pas de données, remplir avec du silence
+        if (buffer.length === 0) {
           output.fill(0)
           return
         }
 
         // Lire depuis le début du buffer (FIFO)
-        for (let i = 0; i < outputLength; i++) {
-          if (buffer.length > 0) {
-            output[i] = buffer.shift()! * volumeRef.current
-          } else {
-            // Pas assez de données, remplir avec du silence
-            output[i] = 0
-          }
+        const samplesToRead = Math.min(outputLength, buffer.length)
+        for (let i = 0; i < samplesToRead; i++) {
+          const sample = buffer.shift()!
+          output[i] = sample * volumeRef.current
+        }
+        
+        // Remplir le reste avec du silence si nécessaire
+        for (let i = samplesToRead; i < outputLength; i++) {
+          output[i] = 0
+        }
+
+        // Log périodique pour debug (tous les ~100 appels, soit ~10 secondes à 22050 Hz)
+        if (Math.random() < 0.01) {
+          console.log(`ScriptProcessor: buffer=${buffer.length}, volume=${volumeRef.current.toFixed(2)}, muted=${mutedRef.current}, listening=${isListeningRef.current}`)
         }
       }
 
