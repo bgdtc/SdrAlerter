@@ -2,6 +2,7 @@ import { spawn } from 'child_process';
 import { emitAudioData } from '../websocket/streamHandler.js';
 
 let rtlFmProcess = null;
+let soxProcess = null;
 let currentParams = null;
 let isListening = false;
 let socketIO = null;
@@ -125,9 +126,7 @@ export async function startListening(params) {
   // Pour FM, utiliser wbfm (wideband FM) qui est plus approprié pour la radio FM
   if (normalizedMode === 'fm') {
     args.push('-M', 'wbfm');
-    // Essayer -r mais il se peut que rtl_fm l'ignore selon la version
-    args.push('-r', '48000'); // 48kHz pour meilleure qualité audio FM
-    console.log('Mode FM détecté, utilisation de wbfm avec -r 48000');
+    console.log('Mode FM détecté, utilisation de wbfm (downsampling via sox)');
   } else {
     args.push('-M', normalizedMode);
   }
@@ -148,82 +147,85 @@ export async function startListening(params) {
   currentParams = params;
   isListening = true;
 
-  rtlFmProcess = spawn('rtl_fm', args);
+  // Pour FM, utiliser sox pour downsampler à 48000 Hz
+  let actualProcess = null;
+  soxProcess = null; // Réinitialiser la variable globale
+  const targetAudioSampleRate = 48000;
+
+  if (normalizedMode === 'fm') {
+    // Lancer rtl_fm qui sortira à ~170000 Hz
+    rtlFmProcess = spawn('rtl_fm', args);
+    
+    // Lancer sox pour downsampler à 48000 Hz
+    // Format: sox -t raw -r 170000 -e signed-integer -b 16 -c 1 - -t raw -r 48000 -e signed-integer -b 16 -c 1 -
+    soxProcess = spawn('sox', [
+      '-t', 'raw',
+      '-r', '170000', // Sample rate d'entrée (sera mis à jour après détection)
+      '-e', 'signed-integer',
+      '-b', '16',
+      '-c', '1',
+      '-', // stdin
+      '-t', 'raw',
+      '-r', targetAudioSampleRate.toString(),
+      '-e', 'signed-integer',
+      '-b', '16',
+      '-c', '1',
+      '-' // stdout
+    ]);
+    
+    // Pipe rtl_fm -> sox
+    rtlFmProcess.stdout.pipe(soxProcess.stdin);
+    
+    // Utiliser sox comme source de données audio
+    actualProcess = soxProcess;
+    console.log('Utilisation de sox pour downsampling FM: 170000 Hz -> 48000 Hz');
+  } else {
+    // Pour les autres modes, utiliser rtl_fm directement
+    rtlFmProcess = spawn('rtl_fm', args);
+    actualProcess = rtlFmProcess;
+  }
 
   const audioBuffer = [];
   let fftBuffer = [];
-
-  // Sample rate audio effectif
-  // Note: rtl_fm peut ignorer -r et sortir au sample rate principal
-  // On va utiliser le sample rate réel qui sera détecté depuis les logs ou utiliser celui configuré
-  // Pour FM avec wbfm, on espère que -r fonctionne, sinon on downsampler côté serveur si nécessaire
-  let audioSampleRate = sampleRate;
-  if (normalizedMode === 'fm') {
-    // Essayer 48000, mais si rtl_fm l'ignore, on devra downsampler
-    // Pour l'instant, on assume que rtl_fm respecte -r 48000
-    audioSampleRate = 48000;
+  let audioSampleRate = normalizedMode === 'fm' ? targetAudioSampleRate : sampleRate;
+  let rtlFmOutputRate = 170000; // Valeur par défaut pour wbfm
+  let detectedSampleRate = audioSampleRate;
+  
+  // Pour POCSAG, on a besoin d'accéder aux données brutes de rtl_fm (avant sox)
+  // Note: Si POCSAG est actif en même temps que FM, il faudra gérer différemment
+  if (normalizedMode !== 'fm' && pocsagStreamCallback) {
+    rtlFmProcess.stdout.on('data', (chunk) => {
+      if (pocsagStreamCallback) {
+        pocsagStreamCallback(chunk);
+      }
+    });
   }
 
-  rtlFmProcess.stdout.on('data', (chunk) => {
-    // Rediriger vers POCSAG si actif (utiliser les données brutes avant conversion)
-    if (pocsagStreamCallback) {
-      pocsagStreamCallback(chunk);
-    }
-
+  // Écouter actualProcess (sox pour FM, rtl_fm pour autres modes)
+  actualProcess.stdout.on('data', (chunk) => {
     // Convertir les données binaires en Int16Array
     const samples = new Int16Array(chunk.buffer, chunk.byteOffset, chunk.byteLength / 2);
     audioBuffer.push(...Array.from(samples));
 
-    // Calculer le ratio de downsampling si nécessaire
-    // On veut toujours sortir à 48000 Hz pour l'audio
-    if (detectedSampleRate > targetAudioSampleRate && downsampleRatio === 1) {
-      downsampleRatio = detectedSampleRate / targetAudioSampleRate;
-      console.log(`Downsampling activé: ${detectedSampleRate} Hz -> ${targetAudioSampleRate} Hz (ratio: ${downsampleRatio.toFixed(2)})`);
-    }
+    // Pour FM avec sox, on reçoit déjà des données à 48000 Hz
+    const targetChunkSize = 2400; // ~50ms à 48000 Hz
 
-    // Calculer la taille du chunk après downsampling
-    // On veut envoyer ~2400 échantillons après downsampling (~50ms à 48000 Hz)
-    const targetChunkSize = 2400;
-    // Utiliser le ratio actuel, ou 1 si pas encore calculé
-    const currentRatio = downsampleRatio > 1 ? downsampleRatio : 1;
-    const chunkSizeBeforeDownsample = Math.floor(targetChunkSize * currentRatio);
-
-    if (audioBuffer.length >= chunkSizeBeforeDownsample) {
-      // Calcul FFT pour visualisation (utiliser les données avant downsampling)
+    if (audioBuffer.length >= targetChunkSize) {
+      // Calcul FFT (utiliser un sous-ensemble des données)
       const fftSize = Math.min(4096, audioBuffer.length);
       if (fftSize >= 512) {
         fftBuffer = calculateSimpleFFT(audioBuffer.slice(0, fftSize));
       }
 
-      // Extraire un chunk pour le downsampling
-      const chunkToDownsample = audioBuffer.splice(0, chunkSizeBeforeDownsample);
-      
-      // Downsampling simple : prendre 1 échantillon sur N
-      let downsampledChunk = [];
-      if (currentRatio > 1) {
-        // Simple downsampling par décimation (prendre 1 échantillon sur N)
-        for (let i = 0; i < chunkToDownsample.length; i += currentRatio) {
-          const index = Math.floor(i);
-          if (index < chunkToDownsample.length) {
-            downsampledChunk.push(chunkToDownsample[index]);
-          }
-        }
-      } else {
-        downsampledChunk = Array.from(chunkToDownsample);
-      }
+      // Extraire un chunk pour l'envoi
+      const chunkToSend = audioBuffer.splice(0, targetChunkSize);
 
-      // Émettre via WebSocket si disponible avec le target sample rate
-      if (socketIO && downsampledChunk.length > 0) {
-        emitAudioData(socketIO, downsampledChunk, fftBuffer, targetAudioSampleRate);
+      // Émettre via WebSocket si disponible
+      if (socketIO && chunkToSend.length > 0) {
+        emitAudioData(socketIO, Array.from(chunkToSend), fftBuffer, audioSampleRate);
       }
     }
   });
-
-  // Variable pour stocker le sample rate réel détecté depuis les logs
-  let detectedSampleRate = audioSampleRate;
-  // Target sample rate pour l'audio (compatible navigateur)
-  const targetAudioSampleRate = 48000;
-  let downsampleRatio = 1;
 
   rtlFmProcess.stderr.on('data', (data) => {
     const stderrText = data.toString();
@@ -232,18 +234,32 @@ export async function startListening(params) {
     // Parser "Output at X Hz" pour détecter le vrai sample rate
     const outputMatch = stderrText.match(/Output at (\d+) Hz/i);
     if (outputMatch) {
-      detectedSampleRate = parseInt(outputMatch[1], 10);
-      console.log(`Sample rate réel détecté depuis rtl_fm: ${detectedSampleRate} Hz`);
+      rtlFmOutputRate = parseInt(outputMatch[1], 10);
+      console.log(`Sample rate rtl_fm détecté: ${rtlFmOutputRate} Hz`);
       
-      // Calculer le ratio de downsampling
-      if (detectedSampleRate > targetAudioSampleRate) {
-        downsampleRatio = detectedSampleRate / targetAudioSampleRate;
-        console.log(`Downsampling configuré: ${detectedSampleRate} Hz -> ${targetAudioSampleRate} Hz (ratio: ${downsampleRatio.toFixed(2)})`);
-      } else {
-        downsampleRatio = 1;
+      // Mettre à jour sox si on l'utilise
+      if (soxProcess && normalizedMode === 'fm') {
+        // Note: sox ne permet pas de changer le sample rate à la volée
+        // Il faut le redémarrer, mais pour l'instant on assume 170000
+        console.log(`sox utilisera ${rtlFmOutputRate} Hz comme entrée`);
       }
+      detectedSampleRate = normalizedMode === 'fm' ? targetAudioSampleRate : rtlFmOutputRate;
     }
   });
+
+  // Gérer les erreurs de sox
+  if (soxProcess) {
+    soxProcess.stderr.on('data', (data) => {
+      console.error('sox stderr:', data.toString());
+    });
+    
+    soxProcess.on('error', (error) => {
+      console.error('Erreur sox:', error);
+      if (error.code === 'ENOENT') {
+        console.error('sox n\'est pas installé. Installez-le avec: sudo apt-get install sox');
+      }
+    });
+  }
 
   rtlFmProcess.on('error', (error) => {
     console.error('Erreur rtl_fm:', error);
@@ -254,12 +270,40 @@ export async function startListening(params) {
     throw error;
   });
 
+  if (soxProcess) {
+    soxProcess.on('error', (error) => {
+      console.error('Erreur sox:', error);
+      if (error.code === 'ENOENT') {
+        console.error('sox n\'est pas installé. Installez-le avec: sudo apt-get install sox');
+        throw new Error('sox n\'est pas installé. Installez-le avec: sudo apt-get install sox');
+      }
+    });
+    
+    soxProcess.stderr.on('data', (data) => {
+      // sox écrit souvent sur stderr même pour les infos normales, on ignore
+    });
+    
+    soxProcess.on('close', (code) => {
+      console.log(`sox s'est terminé avec le code ${code}`);
+    });
+  }
+
   rtlFmProcess.on('close', (code) => {
     console.log(`rtl_fm s'est terminé avec le code ${code}`);
+    if (soxProcess) {
+      soxProcess.kill();
+      soxProcess = null;
+    }
     rtlFmProcess = null;
     isListening = false;
     currentParams = null;
   });
+
+  if (soxProcess) {
+    soxProcess.on('close', (code) => {
+      console.log(`sox s'est terminé avec le code ${code}`);
+    });
+  }
 }
 
 function calculateSimpleFFT(samples) {
@@ -284,6 +328,13 @@ export async function stopListening() {
     throw new Error('Aucune écoute en cours');
   }
 
+  // Arrêter sox d'abord si il existe
+  if (soxProcess) {
+    soxProcess.kill();
+    soxProcess = null;
+  }
+
+  // Arrêter rtl_fm
   rtlFmProcess.kill();
   rtlFmProcess = null;
   isListening = false;

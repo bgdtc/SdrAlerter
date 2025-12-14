@@ -34,6 +34,9 @@ sudo apt-get install rtl-sdr librtlsdr-dev
 # Installer multimon-ng
 sudo apt-get install multimon-ng
 
+# Installer sox (pour le downsampling audio FM)
+sudo apt-get install sox
+
 # Si nécessaire, installer depuis les sources:
 # git clone https://github.com/EliasOenal/multimon-ng.git
 # cd multimon-ng
