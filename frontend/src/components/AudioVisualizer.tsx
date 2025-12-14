@@ -36,9 +36,8 @@ export default function AudioVisualizer({ isListening }: AudioVisualizerProps) {
   const audioContextRef = useRef<AudioContext | null>(null)
   const processorRef = useRef<ScriptProcessorNode | null>(null)
   const gainNodeRef = useRef<GainNode | null>(null)
-  const audioBufferRef = useRef<Float32Array>(new Float32Array(0))
+  const audioBufferRef = useRef<number[]>([])
   const sampleRateRef = useRef<number>(22050)
-  const bufferWritePosRef = useRef<number>(0)
 
   // Initialiser le contexte audio et le ScriptProcessorNode
   useEffect(() => {
@@ -59,23 +58,15 @@ export default function AudioVisualizer({ isListening }: AudioVisualizerProps) {
         const output = e.outputBuffer.getChannelData(0)
         const outputLength = output.length
         const buffer = audioBufferRef.current
-        const bufferLength = buffer.length
 
-        // Copier les données du buffer vers la sortie
+        // Lire depuis le début du buffer (FIFO)
         for (let i = 0; i < outputLength; i++) {
-          if (bufferWritePosRef.current < bufferLength) {
-            output[i] = buffer[bufferWritePosRef.current] * volume
-            bufferWritePosRef.current++
+          if (buffer.length > 0) {
+            output[i] = buffer.shift()! * volume
           } else {
             // Pas assez de données, remplir avec du silence
             output[i] = 0
           }
-        }
-
-        // Si on a lu tout le buffer, le réinitialiser
-        if (bufferWritePosRef.current >= bufferLength) {
-          audioBufferRef.current = new Float32Array(0)
-          bufferWritePosRef.current = 0
         }
       }
 
@@ -113,38 +104,29 @@ export default function AudioVisualizer({ isListening }: AudioVisualizerProps) {
       }
     } else {
       // Nettoyer le buffer quand l'écoute s'arrête
-      audioBufferRef.current = new Float32Array(0)
-      bufferWritePosRef.current = 0
+      audioBufferRef.current = []
     }
   }, [isListening, muted])
 
-  // Ajouter les données audio au buffer circulaire
+  // Ajouter les données audio au buffer FIFO
   useEffect(() => {
     if (!audioData || !isListening) return
 
     const sampleRate = audioData.sampleRate || 22050
     sampleRateRef.current = sampleRate
 
-    // Convertir les données Int16 en Float32
-    const newSamples = new Float32Array(audioData.audio.length)
+    // Convertir les données Int16 en Float32 et les ajouter au buffer
+    const buffer = audioBufferRef.current
     for (let i = 0; i < audioData.audio.length; i++) {
-      newSamples[i] = audioData.audio[i] / 32768.0
+      buffer.push(audioData.audio[i] / 32768.0)
     }
 
-    // Ajouter les nouveaux échantillons au buffer existant
-    const currentBuffer = audioBufferRef.current
-    const newBuffer = new Float32Array(currentBuffer.length + newSamples.length)
-    newBuffer.set(currentBuffer, 0)
-    newBuffer.set(newSamples, currentBuffer.length)
-    audioBufferRef.current = newBuffer
-
-    // Limiter la taille du buffer pour éviter les retards (garder max ~1 seconde)
-    const maxBufferSize = sampleRate * 1 // 1 seconde
-    if (audioBufferRef.current.length > maxBufferSize) {
-      // Garder seulement les dernières données
-      const excess = audioBufferRef.current.length - maxBufferSize
-      audioBufferRef.current = audioBufferRef.current.slice(excess)
-      bufferWritePosRef.current = Math.max(0, bufferWritePosRef.current - excess)
+    // Limiter la taille du buffer pour éviter les retards (garder max ~2 secondes)
+    const maxBufferSize = sampleRate * 2 // 2 secondes
+    if (buffer.length > maxBufferSize) {
+      // Retirer les anciennes données (déjà lues normalement, mais sécurité)
+      const excess = buffer.length - maxBufferSize
+      buffer.splice(0, excess)
     }
   }, [audioData, isListening])
 
