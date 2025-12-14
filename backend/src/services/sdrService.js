@@ -119,15 +119,17 @@ export async function startListening(params) {
   // Construction de la commande rtl_fm
   const args = [
     '-f', `${frequency}M`,
-    '-s', sampleRate.toString(),
-    '-M', normalizedMode
+    '-s', sampleRate.toString()
   ];
 
-  // Pour FM, ajouter le sample rate audio de sortie (22050 Hz pour qualité audio standard)
-  // Cela permet d'avoir un audio de bonne qualité sans downsampling côté serveur
+  // Pour FM, utiliser wbfm (wideband FM) qui est plus approprié pour la radio FM
   if (normalizedMode === 'fm') {
-    args.push('-r', '22050'); // Sample rate audio de sortie pour FM
-    console.log('Mode FM détecté, ajout de -r 22050');
+    args.push('-M', 'wbfm');
+    // Essayer -r mais il se peut que rtl_fm l'ignore selon la version
+    args.push('-r', '48000'); // 48kHz pour meilleure qualité audio FM
+    console.log('Mode FM détecté, utilisation de wbfm avec -r 48000');
+  } else {
+    args.push('-M', normalizedMode);
   }
 
   console.log('Commande rtl_fm:', 'rtl_fm', args.join(' '));
@@ -151,8 +153,16 @@ export async function startListening(params) {
   const audioBuffer = [];
   let fftBuffer = [];
 
-  // Sample rate audio effectif (22050 pour FM, sinon le sample rate configuré)
-  const audioSampleRate = normalizedMode === 'fm' ? 22050 : sampleRate;
+  // Sample rate audio effectif
+  // Note: rtl_fm peut ignorer -r et sortir au sample rate principal
+  // On va utiliser le sample rate réel qui sera détecté depuis les logs ou utiliser celui configuré
+  // Pour FM avec wbfm, on espère que -r fonctionne, sinon on downsampler côté serveur si nécessaire
+  let audioSampleRate = sampleRate;
+  if (normalizedMode === 'fm') {
+    // Essayer 48000, mais si rtl_fm l'ignore, on devra downsampler
+    // Pour l'instant, on assume que rtl_fm respecte -r 48000
+    audioSampleRate = 48000;
+  }
 
   rtlFmProcess.stdout.on('data', (chunk) => {
     // Rediriger vers POCSAG si actif (utiliser les données brutes avant conversion)
@@ -165,9 +175,9 @@ export async function startListening(params) {
     audioBuffer.push(...Array.from(samples));
 
     // Émettre des chunks audio plus fréquemment pour un streaming fluide
-    // Pour FM avec -r 22050, on envoie des chunks de ~1102 échantillons (~50ms à 22050 Hz)
+    // Pour FM avec -r 48000, on envoie des chunks de ~2400 échantillons (~50ms à 48000 Hz)
     // Plus petits chunks = moins de latence et streaming plus fluide
-    const chunkSize = normalizedMode === 'fm' ? 1102 : 2048;
+    const chunkSize = normalizedMode === 'fm' ? 2400 : 2048;
 
     if (audioBuffer.length >= chunkSize) {
       // Calcul FFT pour visualisation (utiliser plus d'échantillons pour meilleure résolution)
@@ -180,14 +190,26 @@ export async function startListening(params) {
       const chunkToSend = audioBuffer.splice(0, chunkSize);
 
       // Émettre via WebSocket si disponible
+      // Utiliser le sample rate détecté depuis les logs, ou celui prévu
       if (socketIO) {
-        emitAudioData(socketIO, Array.from(chunkToSend), fftBuffer, audioSampleRate);
+        emitAudioData(socketIO, Array.from(chunkToSend), fftBuffer, detectedSampleRate);
       }
     }
   });
 
+  // Variable pour stocker le sample rate réel détecté depuis les logs
+  let detectedSampleRate = audioSampleRate;
+
   rtlFmProcess.stderr.on('data', (data) => {
-    console.error('rtl_fm stderr:', data.toString());
+    const stderrText = data.toString();
+    console.error('rtl_fm stderr:', stderrText);
+    
+    // Parser "Output at X Hz" pour détecter le vrai sample rate
+    const outputMatch = stderrText.match(/Output at (\d+) Hz/i);
+    if (outputMatch) {
+      detectedSampleRate = parseInt(outputMatch[1], 10);
+      console.log(`Sample rate réel détecté depuis rtl_fm: ${detectedSampleRate} Hz`);
+    }
   });
 
   rtlFmProcess.on('error', (error) => {

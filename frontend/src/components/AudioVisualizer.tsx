@@ -37,7 +37,7 @@ export default function AudioVisualizer({ isListening }: AudioVisualizerProps) {
   const processorRef = useRef<ScriptProcessorNode | null>(null)
   const gainNodeRef = useRef<GainNode | null>(null)
   const audioBufferRef = useRef<number[]>([])
-  const sampleRateRef = useRef<number>(22050)
+  const sampleRateRef = useRef<number>(48000)
   const mutedRef = useRef(muted)
   const isListeningRef = useRef(isListening)
   const volumeRef = useRef(volume)
@@ -153,8 +153,13 @@ export default function AudioVisualizer({ isListening }: AudioVisualizerProps) {
   useEffect(() => {
     if (!audioData || !isListening) return
 
-    const sampleRate = audioData.sampleRate || 22050
+    const sampleRate = audioData.sampleRate || 48000
     sampleRateRef.current = sampleRate
+    
+    // Log pour debug
+    if (audioData.audio.length > 0) {
+      console.log(`Audio reçu: ${audioData.audio.length} échantillons, sampleRate=${sampleRate}, buffer total=${audioBufferRef.current.length}`)
+    }
 
     // Convertir les données Int16 en Float32 et les ajouter au buffer
     const buffer = audioBufferRef.current
