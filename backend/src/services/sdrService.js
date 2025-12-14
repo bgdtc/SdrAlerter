@@ -120,6 +120,12 @@ export async function startListening(params) {
     '-M', mode
   ];
 
+  // Pour FM, ajouter le sample rate audio de sortie (22050 Hz pour qualité audio standard)
+  // Cela permet d'avoir un audio de bonne qualité sans downsampling côté serveur
+  if (mode === 'fm') {
+    args.push('-r', '22050'); // Sample rate audio de sortie pour FM
+  }
+
   if (gain !== undefined) {
     args.push('-g', gain.toString());
   }
@@ -139,8 +145,11 @@ export async function startListening(params) {
   const audioBuffer = [];
   let fftBuffer = [];
 
+  // Sample rate audio effectif (22050 pour FM, sinon le sample rate configuré)
+  const audioSampleRate = mode === 'fm' ? 22050 : sampleRate;
+
   rtlFmProcess.stdout.on('data', (chunk) => {
-    // Rediriger vers POCSAG si actif
+    // Rediriger vers POCSAG si actif (utiliser les données brutes avant conversion)
     if (pocsagStreamCallback) {
       pocsagStreamCallback(chunk);
     }
@@ -149,15 +158,23 @@ export async function startListening(params) {
     const samples = new Int16Array(chunk.buffer, chunk.byteOffset, chunk.byteLength / 2);
     audioBuffer.push(...Array.from(samples));
 
-    // Calcul FFT simple (tous les ~4096 échantillons)
-    if (audioBuffer.length >= 4096) {
-      const fftData = calculateSimpleFFT(audioBuffer.slice(0, 4096));
-      fftBuffer = fftData;
-      audioBuffer.splice(0, 4096);
+    // Émettre des chunks audio plus fréquemment pour un streaming fluide
+    // Pour FM avec -r 22050, on envoie des chunks de ~2205 échantillons (~100ms à 22050 Hz)
+    const chunkSize = mode === 'fm' ? 2205 : 4096;
+
+    if (audioBuffer.length >= chunkSize) {
+      // Calcul FFT pour visualisation (utiliser plus d'échantillons pour meilleure résolution)
+      const fftSize = 4096;
+      if (audioBuffer.length >= fftSize) {
+        fftBuffer = calculateSimpleFFT(audioBuffer.slice(0, fftSize));
+      }
+
+      // Extraire un chunk pour l'envoi
+      const chunkToSend = audioBuffer.splice(0, chunkSize);
 
       // Émettre via WebSocket si disponible
       if (socketIO) {
-        emitAudioData(socketIO, audioBuffer.slice(-1024), fftData);
+        emitAudioData(socketIO, Array.from(chunkToSend), fftBuffer, audioSampleRate);
       }
     }
   });

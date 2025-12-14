@@ -17,10 +17,11 @@ export function setupWebSocket(io) {
 }
 
 // Fonction pour émettre des données audio vers tous les clients
-export function emitAudioData(io, audioData, fftData) {
+export function emitAudioData(io, audioData, fftData, sampleRate = 22050) {
   io.emit('audioData', {
     audio: audioData,
     fft: fftData,
+    sampleRate: sampleRate,
     timestamp: Date.now()
   });
 }

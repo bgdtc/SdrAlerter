@@ -35,50 +35,89 @@ export default function AudioVisualizer({ isListening }: AudioVisualizerProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const audioContextRef = useRef<AudioContext | null>(null)
   const sourceRef = useRef<AudioBufferSourceNode | null>(null)
+  const audioQueueRef = useRef<number[][]>([])
+  const nextPlayTimeRef = useRef<number>(0)
 
   // Initialiser le contexte audio
   useEffect(() => {
     if (!audioContextRef.current) {
       audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)()
+      nextPlayTimeRef.current = audioContextRef.current.currentTime
     }
   }, [])
 
-  // Gérer le playback audio
+  // Nettoyer la queue audio quand l'écoute s'arrête
+  useEffect(() => {
+    if (!isListening) {
+      audioQueueRef.current = []
+      nextPlayTimeRef.current = audioContextRef.current?.currentTime || 0
+    }
+  }, [isListening])
+
+  // Gérer le playback audio avec streaming continu
   useEffect(() => {
     if (!audioData || !audioContextRef.current || muted || !isListening) return
 
     const audioContext = audioContextRef.current
+    const sampleRate = audioData.sampleRate || 22050
 
-    // Créer un buffer audio depuis les données
-    const buffer = audioContext.createBuffer(1, audioData.audio.length, 48000)
-    const channelData = buffer.getChannelData(0)
+    // Ajouter les données à la queue
+    audioQueueRef.current.push(audioData.audio)
 
-    // Normaliser les données Int16 vers Float32
-    for (let i = 0; i < audioData.audio.length; i++) {
-      channelData[i] = audioData.audio[i] / 32768.0
+    // Limiter la taille de la queue pour éviter les retards
+    if (audioQueueRef.current.length > 10) {
+      audioQueueRef.current.shift()
+      nextPlayTimeRef.current = audioContext.currentTime
     }
 
-    // Créer une source et la jouer
-    const source = audioContext.createBufferSource()
-    const gainNode = audioContext.createGain()
-    
-    gainNode.gain.value = volume
-    source.buffer = buffer
-    source.connect(gainNode)
-    gainNode.connect(audioContext.destination)
+    // Fonction pour jouer le prochain buffer de la queue
+    const playNextBuffer = () => {
+      if (audioQueueRef.current.length === 0 || muted || !isListening) return
 
-    source.start()
-    sourceRef.current = source
+      const audioDataArray = audioQueueRef.current.shift()!
+      if (!audioDataArray || audioDataArray.length === 0) {
+        playNextBuffer()
+        return
+      }
 
-    source.onended = () => {
-      sourceRef.current = null
+      // Créer un buffer audio depuis les données avec le bon sample rate
+      const buffer = audioContext.createBuffer(1, audioDataArray.length, sampleRate)
+      const channelData = buffer.getChannelData(0)
+
+      // Normaliser les données Int16 vers Float32
+      for (let i = 0; i < audioDataArray.length; i++) {
+        channelData[i] = audioDataArray[i] / 32768.0
+      }
+
+      // Créer une source et la jouer au bon moment
+      const source = audioContext.createBufferSource()
+      const gainNode = audioContext.createGain()
+      
+      gainNode.gain.value = volume
+      source.buffer = buffer
+      source.connect(gainNode)
+      gainNode.connect(audioContext.destination)
+
+      // Planifier la lecture au bon moment pour un streaming continu
+      const startTime = Math.max(audioContext.currentTime, nextPlayTimeRef.current)
+      source.start(startTime)
+      
+      // Mettre à jour le temps de la prochaine lecture
+      nextPlayTimeRef.current = startTime + buffer.duration
+
+      source.onended = () => {
+        // Jouer le prochain buffer quand celui-ci se termine
+        playNextBuffer()
+      }
+    }
+
+    // Jouer immédiatement le premier buffer si c'est le premier
+    if (audioQueueRef.current.length === 1) {
+      playNextBuffer()
     }
 
     return () => {
-      if (sourceRef.current) {
-        sourceRef.current.stop()
-        sourceRef.current = null
-      }
+      // Nettoyer si nécessaire
     }
   }, [audioData, volume, muted, isListening])
 

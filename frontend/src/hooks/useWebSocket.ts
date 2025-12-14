@@ -5,6 +5,7 @@ import { API_BASE_URL } from '../utils/api'
 interface AudioData {
   audio: number[]
   fft: number[]
+  sampleRate?: number
   timestamp: number
 }
 
