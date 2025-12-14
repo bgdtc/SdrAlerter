@@ -174,31 +174,56 @@ export async function startListening(params) {
     const samples = new Int16Array(chunk.buffer, chunk.byteOffset, chunk.byteLength / 2);
     audioBuffer.push(...Array.from(samples));
 
-    // Émettre des chunks audio plus fréquemment pour un streaming fluide
-    // Pour FM avec -r 48000, on envoie des chunks de ~2400 échantillons (~50ms à 48000 Hz)
-    // Plus petits chunks = moins de latence et streaming plus fluide
-    const chunkSize = normalizedMode === 'fm' ? 2400 : 2048;
+    // Calculer le ratio de downsampling si nécessaire
+    // On veut toujours sortir à 48000 Hz pour l'audio
+    if (detectedSampleRate > targetAudioSampleRate && downsampleRatio === 1) {
+      downsampleRatio = detectedSampleRate / targetAudioSampleRate;
+      console.log(`Downsampling activé: ${detectedSampleRate} Hz -> ${targetAudioSampleRate} Hz (ratio: ${downsampleRatio.toFixed(2)})`);
+    }
 
-    if (audioBuffer.length >= chunkSize) {
-      // Calcul FFT pour visualisation (utiliser plus d'échantillons pour meilleure résolution)
-      const fftSize = 4096;
-      if (audioBuffer.length >= fftSize) {
+    // Calculer la taille du chunk après downsampling
+    // On veut envoyer ~2400 échantillons après downsampling (~50ms à 48000 Hz)
+    const targetChunkSize = 2400;
+    // Utiliser le ratio actuel, ou 1 si pas encore calculé
+    const currentRatio = downsampleRatio > 1 ? downsampleRatio : 1;
+    const chunkSizeBeforeDownsample = Math.floor(targetChunkSize * currentRatio);
+
+    if (audioBuffer.length >= chunkSizeBeforeDownsample) {
+      // Calcul FFT pour visualisation (utiliser les données avant downsampling)
+      const fftSize = Math.min(4096, audioBuffer.length);
+      if (fftSize >= 512) {
         fftBuffer = calculateSimpleFFT(audioBuffer.slice(0, fftSize));
       }
 
-      // Extraire un chunk pour l'envoi
-      const chunkToSend = audioBuffer.splice(0, chunkSize);
+      // Extraire un chunk pour le downsampling
+      const chunkToDownsample = audioBuffer.splice(0, chunkSizeBeforeDownsample);
+      
+      // Downsampling simple : prendre 1 échantillon sur N
+      let downsampledChunk = [];
+      if (currentRatio > 1) {
+        // Simple downsampling par décimation (prendre 1 échantillon sur N)
+        for (let i = 0; i < chunkToDownsample.length; i += currentRatio) {
+          const index = Math.floor(i);
+          if (index < chunkToDownsample.length) {
+            downsampledChunk.push(chunkToDownsample[index]);
+          }
+        }
+      } else {
+        downsampledChunk = Array.from(chunkToDownsample);
+      }
 
-      // Émettre via WebSocket si disponible
-      // Utiliser le sample rate détecté depuis les logs, ou celui prévu
-      if (socketIO) {
-        emitAudioData(socketIO, Array.from(chunkToSend), fftBuffer, detectedSampleRate);
+      // Émettre via WebSocket si disponible avec le target sample rate
+      if (socketIO && downsampledChunk.length > 0) {
+        emitAudioData(socketIO, downsampledChunk, fftBuffer, targetAudioSampleRate);
       }
     }
   });
 
   // Variable pour stocker le sample rate réel détecté depuis les logs
   let detectedSampleRate = audioSampleRate;
+  // Target sample rate pour l'audio (compatible navigateur)
+  const targetAudioSampleRate = 48000;
+  let downsampleRatio = 1;
 
   rtlFmProcess.stderr.on('data', (data) => {
     const stderrText = data.toString();
@@ -209,6 +234,14 @@ export async function startListening(params) {
     if (outputMatch) {
       detectedSampleRate = parseInt(outputMatch[1], 10);
       console.log(`Sample rate réel détecté depuis rtl_fm: ${detectedSampleRate} Hz`);
+      
+      // Calculer le ratio de downsampling
+      if (detectedSampleRate > targetAudioSampleRate) {
+        downsampleRatio = detectedSampleRate / targetAudioSampleRate;
+        console.log(`Downsampling configuré: ${detectedSampleRate} Hz -> ${targetAudioSampleRate} Hz (ratio: ${downsampleRatio.toFixed(2)})`);
+      } else {
+        downsampleRatio = 1;
+      }
     }
   });
 
